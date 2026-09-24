@@ -71,7 +71,7 @@ print(result.output)
 | `list_tables` | The allowed table and view paths. |
 | `describe_table` | Kind, comment, columns (type, `is_computed`, `is_stored`), and indexes. |
 | `query_table` | Rows matching equality filters (`{"status": "open"}`); timestamp, date, and UUID values are ISO strings. |
-| `similarity_search` | Nearest rows by `column.similarity(string=query)`, with a `score` field (`similarity_score` if the table has its own `score` column). |
+| `similarity_search` | Nearest rows by `column.similarity(string=query)`, with a `score` field. If the table has a column by that name, the field takes `similarity_` prefixes until it is free (`similarity_score`, then `similarity_similarity_score`). |
 
 - `tables` is a required allowlist of table paths or directory prefixes; `['*']` allows the whole
   catalog, including any memory table. A view inside an allowed directory exposes its base table's

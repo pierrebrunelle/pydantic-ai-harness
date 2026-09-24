@@ -299,8 +299,8 @@ class PixeltableToolset(FunctionToolset[AgentDepsT]):
             idx: Embedding index name. Required when the column has more than one index.
 
         Returns:
-            Rows ordered by similarity, each with a `score` field (`similarity_score` when the
-            table has its own `score` column).
+            Rows ordered by similarity, each with a `score` field. If the table has a column by
+            that name, the field takes `similarity_` prefixes until it is free.
         """
         if not query.strip():
             raise ModelRetry('similarity_search query must be non-empty')
