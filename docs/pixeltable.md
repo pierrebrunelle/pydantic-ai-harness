@@ -79,9 +79,10 @@ print(result.output)
 - Default columns skip media, array, and binary columns. Computed columns that are not stored rerun
   their function (possibly a model call) on every read, so the tools skip them by default and reject
   them in `columns` and `where`. A named media column returns a file URL.
-- `max_rows` (default 20) and `max_chars` (default 8000) bound every result. An oversized string is
-  cut to end in `...`, any other oversized value becomes `null`, and `truncated` is set. The
-  `{"table", "rows", "truncated"}` envelope is always returned.
+- `max_rows` (default 20) and `max_chars` (default 8000) bound the results of `query_table` and
+  `similarity_search`. An oversized string is cut to end in `...`, any other oversized value becomes
+  `null`, and `truncated` is set. Both return the `{"table", "rows", "truncated"}` envelope.
+  `list_tables` and `describe_table` return their own shapes, sized by the allowlist and the schema.
 - Pixeltable errors become [`ModelRetry`](/ai/tools-toolsets/tools-advanced/#tool-retries) with a hint
   such as "Call describe_table", so the model can correct its call.
 - The default instructions tell the model to describe unfamiliar tables first and to treat table
