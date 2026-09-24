@@ -77,10 +77,9 @@ print(result.output)
   catalog, including any memory table. A view inside an allowed directory exposes its base table's
   columns. Version handles (`'dir.tbl:3'`) are refused, since an old version keeps rows deleted and
   columns dropped since.
-- Default columns skip media, array, and binary columns and computed columns that are not stored,
-  since those rerun their function (possibly a model call) on every read; unstored columns also reject
-  filters, but naming one in `columns` runs it for each fetched row (at most `max_rows + 1` per call).
-  A named media column returns a file URL.
+- Default columns skip media, array, and binary columns. Computed columns that are not stored rerun
+  their function (possibly a model call) on every read, so the tools skip them by default and reject
+  them in `columns` and `where`. A named media column returns a file URL.
 - `max_rows` (default 20) and `max_chars` (default 8000) bound every result. An oversized string is
   cut to end in `...`, any other oversized value becomes `null`, and `truncated` is set. The
   `{"table", "rows", "truncated"}` envelope is always returned.
@@ -101,7 +100,8 @@ print(result.output)
   no peer claimed, so a retry does not apply it twice. The path roots `__op__` and `__meta__` are
   reserved, paths are at most 255 characters, and operation ids at most 248.
 - `search_memory` uses the same lexical scoring as the other stores, over the files under the
-  tenant's prefix, and sorts in Python because database ordering depends on collation.
+  tenant's prefix. Listing and search order paths with the `"C"` collation in SQL, so the database
+  applies the bound in code point order whatever its default collation is.
 - `store.table` is an ordinary Pixeltable table: query it, join it with application data, or add an
   embedding index on `content`. A direct `update` of `content` is not a Memory write and leaves the
   version unchanged.

@@ -18,6 +18,7 @@ import anyio.from_thread
 import pixeltable as pxt
 import pytest
 from pixeltable.exprs.expr import Expr
+from sqlalchemy import Engine, event
 
 from pydantic_ai_harness.memory import (
     MemoryConflictError,
@@ -463,12 +464,37 @@ class TestPixeltableMemoryStoreSearch:
         paths = ['b.md', 'a.md', 'B.md', '_x.md', '-y.md']
         for path in paths:
             await store.write(path, 'alpha', expected_version=None)
-        # Sorted in Python, so the order and the files a bound keeps do not depend on the collation.
+        # Ordered under the "C" collation in SQL, so the order and the files a bound keeps do not depend on the
+        # database collation.
         assert await store.list_paths(limit=10) == sorted(paths)
         assert await store.list_paths(limit=2) == sorted(paths)[:2]
         found = await store.search('', 'alpha', limit=10, max_files=2, max_chars=200, max_file_chars=100)
         assert [match.path for match in found.matches] == sorted(paths)[:2]
         assert found.truncated
+
+    async def test_list_paths_and_search_push_order_and_bound_into_sql(self, store: PixeltableMemoryStore) -> None:
+        # The bound must limit the rows the database returns, not trim a full scan in Python,
+        # and the ordering must not depend on the database's default collation.
+        for path in ('a.md', 'b.md', 'c.md'):
+            await store.write(path, 'alpha', expected_version=None)
+        statements: list[str] = []
+
+        def record(*args: object) -> None:
+            statement = args[2]
+            if isinstance(statement, str) and 'ORDER BY' in statement:
+                statements.append(statement)
+
+        event.listen(Engine, 'before_cursor_execute', record)
+        try:
+            assert await store.list_paths(limit=1) == ['a.md']
+            found = await store.search('', 'alpha', limit=10, max_files=1, max_chars=200, max_file_chars=100)
+        finally:
+            event.remove(Engine, 'before_cursor_execute', record)
+        assert [match.path for match in found.matches] == ['a.md']
+        assert len(statements) == 2
+        for statement in statements:
+            assert 'COLLATE "C"' in statement
+            assert 'LIMIT' in statement
 
     async def test_search_bounds_each_file_and_ignores_namespace_prefix(self, store: PixeltableMemoryStore) -> None:
         namespace = 'n' * 180

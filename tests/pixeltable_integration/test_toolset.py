@@ -360,7 +360,7 @@ class TestPixeltableToolsetQuery:
         with pytest.raises(ModelRetry, match='ISO-format Timestamp'):
             tools.query_table(f'{catalog}.typed', where={'ts': 'yesterday'})
 
-    def test_unstored_computed_columns_are_not_run_by_default(self, catalog: str) -> None:
+    def test_unstored_computed_columns_are_not_run(self, catalog: str) -> None:
         # Unstored computed columns recompute at query time; an LLM UDF would spend money.
         chunks = get_table(f'{catalog}.chunks')
         chunks.add_computed_column(virtual=chunks.pos * 2, stored=False)
@@ -369,8 +369,9 @@ class TestPixeltableToolsetQuery:
         first = tools.query_table(f'{catalog}.chunks', where={'pos': 1})['rows'][0]
         assert 'virtual' not in first
         assert first['materialized'] == 3
-        named = tools.query_table(f'{catalog}.chunks', columns=['virtual'], where={'pos': 1})
-        assert named['rows'] == [{'virtual': 2}]
+        # Naming one would run its function for every fetched row.
+        with pytest.raises(ModelRetry, match='computed on read'):
+            tools.query_table(f'{catalog}.chunks', columns=['virtual'], where={'pos': 1})
         stored = {
             column['name']: column['is_stored'] for column in tools.describe_table(f'{catalog}.chunks')['columns']
         }

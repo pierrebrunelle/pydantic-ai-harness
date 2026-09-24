@@ -13,8 +13,9 @@ External assumptions (Pixeltable 0.7.8 to 0.7.9, verified 2026-09-23 against the
 - `update` and `delete` return row counts in `row_count_stats`, and each statement holds the table
   lock for its duration, which is what the compare-and-set checks rely on.
 - Pixeltable creates its own database with `LC_COLLATE 'C'` (`pixeltable/utils/dbms.py`), but an
-  external Postgres configured through `DB_CONNECT_STR` keeps its own collation, so listing and search
-  sort paths in Python rather than trusting SQL `ORDER BY`.
+  external Postgres configured through `DB_CONNECT_STR` keeps its own collation. Listing and search
+  order by `path COLLATE "C"` through a UDF's `to_sql`, so the database applies `limit` in code
+  point order whatever the database collation is.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from typing import Any, TypeVar
 
 import anyio.to_thread
 import pixeltable as pxt
+import sqlalchemy as sa
 from typing_extensions import TypedDict
 
 from pydantic_ai_harness.memory import (
@@ -75,6 +77,18 @@ def _receipt_path(operation: MemoryOperation) -> str:
     if len(operation.id) > _MAX_OPERATION_ID_CHARS:
         raise ValueError(f'operation id exceeds {_MAX_OPERATION_ID_CHARS} characters')
     return f'{_OP_PREFIX}{operation.id}'
+
+
+@pxt.udf  # pyright: ignore[reportUnknownMemberType]
+def _code_point_order(path: str) -> str:
+    """Sort key for `path` in code point order; only its SQL translation is used."""
+    return path  # pragma: no cover
+
+
+@_code_point_order.to_sql  # pyright: ignore[reportUnknownMemberType]
+def _(path: sa.ColumnElement[str]) -> sa.ColumnElement[str]:
+    # UTF-8 byte order under the "C" collation is code point order, the order Python sorts `str` in.
+    return sa.collate(path, 'C')
 
 
 _T = TypeVar('_T')
@@ -534,26 +548,25 @@ class PixeltableMemoryStore:
             self._complete_operation(t, operation, intent)
         return MemoryMutation(version=None, replayed=False, existed=existed)
 
-    def _file_rows(self, t: pxt.Table, prefix: str, content_chars: int = 0) -> list[dict[str, Any]]:
-        """Live file rows under `prefix`, sorted by path, with `content` cut to `content_chars` when set.
+    def _file_rows(self, t: pxt.Table, prefix: str, limit: int, content_chars: int = 0) -> list[dict[str, Any]]:
+        """The first `limit` live file rows under `prefix` in code point path order.
 
-        The prefix match is a substring equality, which is collation-independent; a range scan or
-        an ORDER BY is not, so sorting happens here.
+        `content` is cut to `content_chars` in SQL when set. The prefix match is a substring equality
+        and the ordering pins the "C" collation, so neither depends on the database collation.
         """
         pred = t.kind == _KIND_FILE
         if prefix:
             pred = pred & (t.path.slice(0, len(prefix)) == prefix)
         columns = {'content': t.content.slice(0, content_chars)} if content_chars else {}
-        rows = list(t.where(pred).select(t.path, **columns).collect())
-        rows.sort(key=lambda row: str(row['path']))
-        return rows
+        query = t.where(pred).order_by(_code_point_order(t.path)).limit(limit)
+        return list(query.select(t.path, **columns).collect())
 
     def _list_paths_sync(self, prefix: str, limit: int) -> list[str]:
         validate_store_prefix(prefix)
         if limit <= 0:
             raise ValueError('limit must be positive')
         t = self._ensure_table()
-        return [str(row['path']) for row in self._file_rows(t, prefix)[:limit]]
+        return [str(row['path']) for row in self._file_rows(t, prefix, limit)]
 
     def _search_sync(
         self,
@@ -569,9 +582,9 @@ class PixeltableMemoryStore:
             return MemorySearchResult(matches=[], scanned=0, truncated=False)
         t = self._ensure_table()
         # One extra character tells a file cut at max_file_chars from one that fits exactly.
-        fetched = self._file_rows(t, prefix, content_chars=max_file_chars + 1)
         # One file past max_files lets lexical_search report the scan bound as truncated.
-        files = [(str(row['path']), row['content'] or '') for row in fetched[: max_files + 1]]
+        fetched = self._file_rows(t, prefix, max_files + 1, content_chars=max_file_chars + 1)
+        files = [(str(row['path']), row['content'] or '') for row in fetched]
         result = lexical_search(
             [(path, content[:max_file_chars]) for path, content in files],
             query,

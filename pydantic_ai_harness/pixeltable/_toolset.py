@@ -3,8 +3,9 @@
 External assumptions (Pixeltable 0.7.8 to 0.7.9, verified 2026-09-23 against
 <https://github.com/pixeltable/pixeltable/tree/v0.7.9>; re-check when raising the floor):
 
-- A `where` comparing an unstored computed column to a literal raises a bare `AssertionError` in
-  `pixeltable/exprs/comparison.py`, so such filters are rejected before reaching Pixeltable.
+- An unstored computed column reruns its function on every read, so projections and filters naming
+  one are rejected. (A `where` comparing one to a literal also raises a bare `AssertionError` in
+  `pixeltable/exprs/comparison.py`.)
 - A version handle (`'dir.tbl:3'`) opens a snapshot that still holds rows deleted and columns dropped
   since, so paths containing `:` are refused.
 """
@@ -17,7 +18,7 @@ from collections.abc import Callable, Mapping
 from datetime import date, datetime
 
 import pixeltable as pxt
-from pixeltable.catalog.table_metadata import TableMetadata
+from pixeltable.catalog.table_metadata import ColumnMetadata, TableMetadata
 from pixeltable.exprs.expr import Expr
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import AgentDepsT
@@ -93,6 +94,11 @@ _WHERE_PARSERS: dict[str, Callable[[str], object]] = {
     'Date': date.fromisoformat,
     'UUID': uuid.UUID,
 }
+
+
+def _computed_on_read(info: ColumnMetadata) -> bool:
+    # An unstored computed column reruns its function, possibly a paid or side-effecting UDF, on every read.
+    return info['is_computed'] and not info['is_stored']
 
 
 def _norm(path: str) -> str:
@@ -254,9 +260,9 @@ class PixeltableToolset(FunctionToolset[AgentDepsT]):
 
         Args:
             table: Pixeltable table path.
-            columns: Columns to return. Omit to skip media, array, binary, and
-                computed columns that are not stored. A named media column is
-                returned as a file URL.
+            columns: Columns to return. Omit to skip media, array, and binary
+                columns. Computed columns that are not stored are rejected. A
+                named media column is returned as a file URL.
             where: Equality filters mapping column name to value. Media, array, and
                 binary columns reject non-null filters; `None` matches null rows.
             limit: Maximum rows to return, capped by the capability.
@@ -339,11 +345,7 @@ class PixeltableToolset(FunctionToolset[AgentDepsT]):
         columns: list[str] = []
         for name, info in metadata['columns'].items():
             type_ = info['type_']
-            if _is_media_type(type_) or _is_skipped_type(type_):
-                continue
-            # A computed column that is not stored recomputes at query time; an LLM UDF
-            # would spend money on every call.
-            if info['is_computed'] and not info['is_stored']:
+            if _is_media_type(type_) or _is_skipped_type(type_) or _computed_on_read(info):
                 continue
             columns.append(name)
         return columns
@@ -364,6 +366,8 @@ class PixeltableToolset(FunctionToolset[AgentDepsT]):
                 continue
             if name not in column_md:
                 raise ModelRetry(f'Unknown column {name!r} on {path!r}. Call describe_table.')
+            if _computed_on_read(column_md[name]):
+                raise ModelRetry(f'Column {name!r} is computed on read; these tools do not run it.')
             type_ = column_md[name]['type_']
             if _is_skipped_type(type_):
                 continue
@@ -388,8 +392,8 @@ class PixeltableToolset(FunctionToolset[AgentDepsT]):
                 raise ModelRetry(f'Unknown column {name!r} in where. Call describe_table.')
             info = column_md[name]
             type_ = info['type_']
-            if info['is_computed'] and not info['is_stored']:
-                raise ModelRetry(f'Column {name!r} is computed on read; filtering on it would run it for every row.')
+            if _computed_on_read(info):
+                raise ModelRetry(f'Column {name!r} is computed on read; these tools do not run it.')
             if raw_value is not None and (_is_skipped_type(type_) or _is_media_type(type_)):
                 raise ModelRetry(f'Column {name!r} does not support equality filters. Call describe_table.')
             base = column_base(type_)
