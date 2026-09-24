@@ -109,6 +109,9 @@ prompt-injection-defender = [
 prompt-injection-defender-ml = [
     "stackone-defender[onnx]>=0.7.3,<0.8 ; python_full_version >= '3.11'",
 ]
+pixeltable = [
+    "pixeltable>=0.7.8 ; python_full_version >= '3.11'",
+]
 coder = [
     "ripgrep==14.1.0 ; sys_platform != 'android'",
 ]
@@ -141,6 +144,7 @@ dev = [
     "redis>=6.0.0",
     # httpx2 recording for device flow: https://github.com/pydantic/pydantic-ai/issues/8616.
     "cassetter>=0.11.0",
+    "mistune>=3.0.2 ; python_full_version >= '3.11'",
 ]
 lint = [
     'ruff>=0.14',
@@ -244,7 +248,7 @@ executionEnvironments = [
 addopts = '-p no:cassetter'
 testpaths = ['tests']
 xfail_strict = true
-markers = ['modal_live: runs against a real Modal control plane; needs credentials']
+markers = ['modal_live: runs against a real Modal control plane; needs credentials', 'expensive: long-running local volume tests']
 filterwarnings = [
     'error',
     # DBOS's run_sync triggers this on Python 3.12+ — not our code.
@@ -254,6 +258,9 @@ filterwarnings = [
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
     # Experimental capabilities warn on import by design; assert it explicitly where it matters.
     'ignore::pydantic_ai_harness.experimental.HarnessExperimentalWarning',
+    # pixeltable gives each thread a Runtime whose event loop is never closed when the thread exits.
+    'ignore:unclosed event loop <_UnixSelectorEventLoop:ResourceWarning',
+    'ignore:unclosed <socket.socket fd=\\d+, family=1, type=1, proto=0>:ResourceWarning',
 ]
 anyio_mode = 'auto'
 
