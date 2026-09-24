@@ -96,7 +96,8 @@ _WHERE_PARSERS: dict[str, Callable[[str], object]] = {
 
 
 def _norm(path: str) -> str:
-    return path.replace('/', '.')
+    # Pixeltable folds identifiers to lowercase, so 'HR.Handbook' names the table listed as 'hr/handbook'.
+    return path.replace('/', '.').lower()
 
 
 def _allowed(path: str, tables: list[str]) -> bool:

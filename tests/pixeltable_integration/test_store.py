@@ -255,6 +255,16 @@ class TestPixeltableMemoryStore:
             await store.read(long_path, max_chars=10)
         with pytest.raises(ValueError, match='255'):
             await store.delete(long_path, expected_version=None)
+        # Receipts live at `__op__/<id>` under the same key, so ids stop 7 characters sooner.
+        longest = MemoryOperation(id='i' * 248, fingerprint='write:a.md:x')
+        assert not (await store.write('a.md', 'x', expected_version=None, operation=longest)).replayed
+        too_long = MemoryOperation(id='i' * 249, fingerprint='write:b.md:x')
+        with pytest.raises(ValueError, match='operation id exceeds 248'):
+            await store.write('b.md', 'x', expected_version=None, operation=too_long)
+        with pytest.raises(ValueError, match='operation id exceeds 248'):
+            await store.delete('a.md', expected_version=None, operation=too_long)
+        with pytest.raises(ValueError, match='operation id exceeds 248'):
+            await store.get_operation(too_long)
 
     async def test_argument_validation(self, store: PixeltableMemoryStore) -> None:
         with pytest.raises(ValueError, match='max_chars must be positive'):
@@ -448,6 +458,17 @@ class TestPixeltableMemoryStoreSearch:
             'tenant-b/main/', 'alpha', limit=10, max_files=10, max_chars=200, max_file_chars=1_000
         )
         assert [match.path for match in outsider.matches] == ['tenant-b/main/private.md']
+
+    async def test_list_paths_and_search_keep_code_point_order(self, store: PixeltableMemoryStore) -> None:
+        paths = ['b.md', 'a.md', 'B.md', '_x.md', '-y.md']
+        for path in paths:
+            await store.write(path, 'alpha', expected_version=None)
+        # Sorted in Python, so the order and the files a bound keeps do not depend on the collation.
+        assert await store.list_paths(limit=10) == sorted(paths)
+        assert await store.list_paths(limit=2) == sorted(paths)[:2]
+        found = await store.search('', 'alpha', limit=10, max_files=2, max_chars=200, max_file_chars=100)
+        assert [match.path for match in found.matches] == sorted(paths)[:2]
+        assert found.truncated
 
     async def test_search_bounds_each_file_and_ignores_namespace_prefix(self, store: PixeltableMemoryStore) -> None:
         namespace = 'n' * 180
@@ -858,6 +879,25 @@ class TestPixeltableMemoryStoreRaces:
             retried = await store.delete('q.md', expected_version=current.version, operation=operation)
             assert not retried.replayed
             assert await store.read('q.md', max_chars=100) is None
+
+    async def test_conflicted_delete_is_not_credited_with_another_delete(
+        self, store: PixeltableMemoryStore, table_name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An unrelated writer deletes the path after we journal. The file is gone, but our delete
+        # removed nothing and no peer claimed the intent, so only one of the two deletes succeeds.
+        base = await store.write('g.md', 'base', expected_version=None)
+        operation = MemoryOperation(id='run-1:call-32', fingerprint='delete:g.md')
+        other = PixeltableMemoryStore(table_name=table_name)
+
+        def other_deletes_the_path(call: Callable[[], pxt.UpdateStatus]) -> pxt.UpdateStatus:
+            status = call()
+            assert anyio.from_thread.run(partial(other.delete, 'g.md', expected_version=base.version)).existed
+            return status
+
+        _intercept_insert(monkeypatch, store.table, receipt=True, around=other_deletes_the_path)
+        with pytest.raises(MemoryConflictError, match='changed during operation'):
+            await store.delete('g.md', expected_version=base.version, operation=operation)
+        assert await store.get_operation(operation) is None
 
     @pytest.mark.parametrize('mutation', ['write', 'delete'])
     async def test_withdraw_never_drops_an_intent_a_peer_applied(

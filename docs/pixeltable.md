@@ -25,10 +25,10 @@ error handling.
 ## Usage
 
 Install the `pixeltable` extra (Python 3.11 or later). The example uses an OpenAI model and OpenAI
-embeddings, so it also pulls in the `openai` provider:
+embeddings, so it also pulls in the `openai` provider, plus `spec` for the YAML agent spec below:
 
 ```bash
-pip/uv-add "pydantic-ai-harness[pixeltable]" "pydantic-ai-slim[openai]"
+pip/uv-add "pydantic-ai-harness[pixeltable]" "pydantic-ai-slim[openai,spec]"
 ```
 
 A table with an embedding index, created once (in an application, declare it on a Pixeltable
@@ -78,7 +78,8 @@ print(result.output)
   columns dropped since.
 - Default columns skip media, array, and binary columns and computed columns that are not stored,
   since those rerun their function (possibly a model call) on every read; unstored columns also reject
-  filters. A named media column returns a file URL.
+  filters, but naming one in `columns` runs it for each fetched row (at most `max_rows + 1` per call).
+  A named media column returns a file URL.
 - `max_rows` (default 20) and `max_chars` (default 8000) bound every result. An oversized string is
   cut to end in `...`, any other oversized value becomes `null`, and `truncated` is set. The
   `{"table", "rows", "truncated"}` envelope is always returned.
@@ -97,7 +98,7 @@ print(result.output)
 - A write that carries an operation id journals its intent as an `__op__/<id>` row before applying
   it. A crash rolls forward on replay; a writer that loses the compare-and-set withdraws an intent that
   no peer claimed, so a retry does not apply it twice. The path roots `__op__` and `__meta__` are
-  reserved, and paths are at most 255 characters.
+  reserved, paths are at most 255 characters, and operation ids at most 248.
 - `search_memory` uses the same lexical scoring as the other stores, over the files under the
   tenant's prefix, and sorts in Python because database ordering depends on collation.
 - `store.table` is an ordinary Pixeltable table: query it, join it with application data, or add an

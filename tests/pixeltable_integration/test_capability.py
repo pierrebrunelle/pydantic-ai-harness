@@ -64,8 +64,8 @@ class TestPixeltableCapability:
             with pytest.raises(ValueError, match='tables entry'):
                 Pixeltable(tables=bad)
 
-    def test_tables_normalizes_slashes(self) -> None:
-        assert Pixeltable(tables=['my_app/doc_chunks', '']).tables == ['my_app.doc_chunks']
+    def test_tables_normalizes_slashes_and_case(self) -> None:
+        assert Pixeltable(tables=['My_App/Doc_Chunks', '']).tables == ['my_app.doc_chunks']
 
     def test_caps_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match='max_rows must be at least 1, got 0'):

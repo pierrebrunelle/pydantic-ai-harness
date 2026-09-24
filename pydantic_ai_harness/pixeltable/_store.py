@@ -12,6 +12,9 @@ External assumptions (Pixeltable 0.7.8 to 0.7.9, verified 2026-09-23 against the
   columns (`pixeltable/catalog/table_metadata.py`).
 - `update` and `delete` return row counts in `row_count_stats`, and each statement holds the table
   lock for its duration, which is what the compare-and-set checks rely on.
+- Pixeltable creates its own database with `LC_COLLATE 'C'` (`pixeltable/utils/dbms.py`), but an
+  external Postgres configured through `DB_CONNECT_STR` keeps its own collation, so listing and search
+  sort paths in Python rather than trusting SQL `ORDER BY`.
 """
 
 from __future__ import annotations
@@ -62,6 +65,16 @@ def _check_store_path(path: str) -> None:
     _reject_reserved_path(path)
     if len(path) > _MAX_PATH_CHARS:
         raise ValueError(f'memory path {path!r} exceeds {_MAX_PATH_CHARS} characters')
+
+
+_MAX_OPERATION_ID_CHARS = _MAX_PATH_CHARS - len(_OP_PREFIX)
+
+
+def _receipt_path(operation: MemoryOperation) -> str:
+    # Receipts share the path key, so a longer id could collide with another id's receipt.
+    if len(operation.id) > _MAX_OPERATION_ID_CHARS:
+        raise ValueError(f'operation id exceeds {_MAX_OPERATION_ID_CHARS} characters')
+    return f'{_OP_PREFIX}{operation.id}'
 
 
 _T = TypeVar('_T')
@@ -272,9 +285,7 @@ class PixeltableMemoryStore:
         self, t: pxt.Table, operation: MemoryOperation, *, withdraw_unapplied: bool = False
     ) -> MemoryMutation | None:
         rows = (
-            t.where(t.path == f'{_OP_PREFIX}{operation.id}')
-            .select(t.fingerprint, t.version, t.existed, t.content)
-            .collect()
+            t.where(t.path == _receipt_path(operation)).select(t.fingerprint, t.version, t.existed, t.content).collect()
         )
         if len(rows) == 0:
             return None
@@ -300,13 +311,19 @@ class PixeltableMemoryStore:
 
         `withdraw` is for the writer whose own mutation just lost the compare-and-set: an
         intent nobody claimed cannot have landed, so it is deleted and a retry starts clean, as
-        FileStore (which checks and journals in one transaction) never keeps one. A peer claims
-        the receipt before rolling it forward, and a claimed or crash-recovered intent that
-        cannot be settled stays, blocking recovery like FileStore. Returns False when the intent
-        was gone before it could be claimed.
+        FileStore (which checks and journals in one transaction) never keeps one. That holds
+        even when the file is gone, since another writer's delete leaves the same state. A peer
+        claims the receipt before rolling it forward, and a claimed or crash-recovered intent that
+        cannot be settled stays, blocking recovery like FileStore. After a crash, a missing file
+        settles a delete intent, as in FileStore's recovery. Returns False when the intent was
+        gone before it could be claimed.
         """
-        receipt_row = (t.path == f'{_OP_PREFIX}{operation.id}') & (t.kind == _KIND_OP) & (t.content == intent)
+        receipt_row = (t.path == _receipt_path(operation)) & (t.kind == _KIND_OP) & (t.content == intent)
         recorded: _Intent = json.loads(intent)
+        conflict = MemoryConflictError(f'memory path {recorded["file"]!r} changed during operation {operation.id!r}')
+        unclaimed = receipt_row & (t.last_operation_id == None)  # noqa: E711 (SQL IS NULL)
+        if withdraw and t.delete(where=unclaimed).row_count_stats.del_rows == 1:
+            raise conflict
         row = self._file_row(t, recorded['file'])
         current = None if row is None else str(row['version'])
         applied = current is None if recorded['op'] == 'delete' else current == receipt.version
@@ -324,9 +341,7 @@ class PixeltableMemoryStore:
             else:
                 applied = True
         if not applied:
-            if withdraw:
-                t.delete(where=receipt_row & (t.last_operation_id == None))  # noqa: E711 (SQL IS NULL)
-            raise MemoryConflictError(f'memory path {recorded["file"]!r} changed during operation {operation.id!r}')
+            raise conflict
         self._complete_operation(t, operation, intent)
         return True
 
@@ -376,7 +391,7 @@ class PixeltableMemoryStore:
                 t,
                 [
                     {
-                        'path': f'{_OP_PREFIX}{operation.id}',
+                        'path': _receipt_path(operation),
                         'kind': _KIND_OP,
                         'content': intent,
                         'version': version,
@@ -401,7 +416,7 @@ class PixeltableMemoryStore:
         """
         t.update(
             {'content': None},
-            where=(t.path == f'{_OP_PREFIX}{operation.id}') & (t.kind == _KIND_OP) & (t.content == intent),
+            where=(t.path == _receipt_path(operation)) & (t.kind == _KIND_OP) & (t.content == intent),
         )
 
     def _read_sync(self, path: str, max_chars: int) -> MemoryFile | None:
@@ -555,7 +570,7 @@ class PixeltableMemoryStore:
         t = self._ensure_table()
         # One extra character tells a file cut at max_file_chars from one that fits exactly.
         fetched = self._file_rows(t, prefix, content_chars=max_file_chars + 1)
-        # One file past max_files lets _lexical_search report the scan bound as truncated.
+        # One file past max_files lets lexical_search report the scan bound as truncated.
         files = [(str(row['path']), row['content'] or '') for row in fetched[: max_files + 1]]
         result = lexical_search(
             [(path, content[:max_file_chars]) for path, content in files],

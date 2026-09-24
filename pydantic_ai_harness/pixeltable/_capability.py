@@ -35,15 +35,15 @@ class Pixeltable(AbstractCapability[AgentDepsT]):
 
     Pair this with Harness `Memory` (any store) when the agent also keeps a notebook.
 
-    ``python
+    ```python
     from pydantic_ai import Agent
-    from pydantic_ai_pixeltable import Pixeltable
+    from pydantic_ai_harness.pixeltable import Pixeltable
 
     agent = Agent(
-        "openai:gpt-5.6-sol",
-        capabilities=[Pixeltable(tables=["my_app.doc_chunks"])],
+        'openai:gpt-5.6-sol',
+        capabilities=[Pixeltable(tables=['my_app.doc_chunks'])],
     )
-    ``
+    ```
     """
 
     tables: list[str]
@@ -74,7 +74,8 @@ class Pixeltable(AbstractCapability[AgentDepsT]):
             raise ValueError(f'max_chars must be at least 1, got {self.max_chars}')
         if isinstance(self.tables, str):
             raise ValueError('tables must be a list of paths, not a string')
-        cleaned = [entry.replace('/', '.') for entry in self.tables if entry]
+        # Lowercased like Pixeltable's identifiers, so merging and the instructions match the catalog.
+        cleaned = [entry.replace('/', '.').lower() for entry in self.tables if entry]
         if not cleaned:
             raise ValueError("tables must be a non-empty allowlist, or ['*'] for the whole catalog")
         if ALL_TABLES in cleaned and cleaned != [ALL_TABLES]:

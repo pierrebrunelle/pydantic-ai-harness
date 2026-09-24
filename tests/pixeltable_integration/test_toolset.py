@@ -75,6 +75,14 @@ class TestPixeltableToolsetAllowlist:
         tools = _tools([f'{catalog}/chunks'])
         assert tools.query_table(f'{catalog}/chunks', columns=['pos'], where={'pos': 1})['rows'] == [{'pos': 1}]
 
+    def test_allowlist_folds_case_like_pixeltable(self, catalog: str) -> None:
+        # Pixeltable lowercases identifiers, so a differently cased entry names the same table.
+        tools = _tools([f'{catalog.upper()}.Chunks'])
+        assert tools.list_tables()['tables'] == [f'{catalog}.chunks']
+        assert tools.describe_table(f'{catalog}.CHUNKS')['table'] == f'{catalog}.chunks'
+        with pytest.raises(ModelRetry, match='allowlist'):
+            tools.describe_table(f'{catalog.upper()}.OTHER')
+
     def test_version_handles_are_refused(self, catalog: str) -> None:
         # An old version still holds rows deleted and columns dropped since (e.g. for privacy).
         for tables in ([f'{catalog}.chunks'], [catalog], ['*']):
